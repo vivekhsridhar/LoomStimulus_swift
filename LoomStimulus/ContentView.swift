@@ -36,23 +36,22 @@ struct ContentView: View {
 
 @MainActor
 final class LoomModel: ObservableObject {
-    // Loom parameters (same defaults as your Cinder version)
+    // Loom parameters
     @Published var size: Double = 100.0       // "physical size" * projection scale
     @Published var dist: Double = 100.0       // distance from eye
     @Published var speed: Double = 5.0        // distance units per second
-    @Published var radius: Double = 0.0        // projected radius (pixels-ish)
+    @Published var radius: Double = 0.0       // projected radius
 
     // Triggering / timing
     @Published var trigger: Bool = false
-    var lag: Double = -1.0
-    var timeInterval: Double = 10.0
-    var maxInterval: Double = 60.0
+    var lag: Double = -1.0                    // delay to prevent app from scheduling the first stimulus instantly
+    var timeInterval: Double = 10.0           // mean waiting time between successive looms
+    var maxInterval: Double = 60.0            // maximum waiting time between successive looms
 
     // Internal clock state
     private var startTime: Double?
     private var lastNow: Double?
     private var nextTriggerTime: Double?
-    private var lastFiredBucket: Int?
 
     private func drawTruncatedExponential(mean: Double, tMax: Double) -> Double {
         let u = Double.random(in: 0..<1)

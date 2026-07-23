@@ -6,15 +6,27 @@
 //
 
 import SwiftUI
+import UIKit
 
 @main
 struct LoomStimulusApp: App {
-    init() {
-        UIApplication.shared.isIdleTimerDisabled = true
-    }
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .onAppear {
+                    UIApplication.shared.isIdleTimerDisabled = true
+                }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                // Prevent dimming and automatic locking
+                UIApplication.shared.isIdleTimerDisabled = true
+            } else {
+                // Restore normal locking when the app is inactive
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
         }
     }
 }
