@@ -7,6 +7,7 @@
 
 import SwiftUI
 
+
 struct ContentView: View {
     @StateObject private var model = LoomModel()
 
@@ -19,92 +20,273 @@ struct ContentView: View {
                     if model.trigger {
                         Circle()
                             .fill(Color.black)
-                            .frame(width: model.radius * 2,
-                                   height: model.radius * 2)
-                            .position(x: geo.size.width / 2,
-                                      y: geo.size.height / 2)
+                            .frame(
+                                width: model.radius * 2,
+                                height: model.radius * 2
+                            )
+                            .position(
+                                x: geo.size.width / 2,
+                                y: geo.size.height / 2
+                            )
                     }
                 }
                 .onChange(of: timeline.date) {
-                    model.tick(now: timeline.date.timeIntervalSince1970)
+                    model.tick(
+                        now: timeline.date.timeIntervalSince1970
+                    )
                 }
             }
         }
-        .statusBarHidden(true)
     }
 }
 
+
 @MainActor
 final class LoomModel: ObservableObject {
+
+    // ---------------------------------------------------------
     // Loom parameters
-    @Published var size: Double = 100.0       // "physical size" * projection scale
-    @Published var dist: Double = 100.0       // distance from eye
-    @Published var speed: Double = 5.0        // distance units per second
-    @Published var radius: Double = 0.0       // projected radius
+    // ---------------------------------------------------------
+    @Published var size: Double = 100.0
+    @Published var dist: Double = 100.0
+    @Published var speed: Double = 5.0
+    var minSpeed: Double = 3.0
+    var maxSpeed: Double = 8.0
+    
+    @Published var radius: Double = 0.0
 
+    // ---------------------------------------------------------
     // Triggering / timing
+    // ---------------------------------------------------------
     @Published var trigger: Bool = false
-    var lag: Double = -1.0                    // delay to prevent app from scheduling the first stimulus instantly
-    var timeInterval: Double = 10.0           // mean waiting time between successive looms
-    var maxInterval: Double = 60.0            // maximum waiting time between successive looms
 
+    var lag: Double = -1.0
+
+    // Mean of exponential waiting-time distribution
+    var timeInterval: Double = 10.0
+
+    // Maximum allowed waiting time
+    var maxInterval: Double = 60.0
+
+    // ---------------------------------------------------------
     // Internal clock state
+    // ---------------------------------------------------------
     private var startTime: Double?
     private var lastNow: Double?
     private var nextTriggerTime: Double?
 
-    private func drawTruncatedExponential(mean: Double, tMax: Double) -> Double {
+    // Stores the randomly drawn waiting time associated with the next loom
+    private var currentInterStimulusInterval: Double?
+
+    // ---------------------------------------------------------
+    // Output logging
+    // ---------------------------------------------------------
+    private var outputURL: URL?
+    private var loomStartTime: Date?
+    private var loomNumber: Int = 0
+
+    // ---------------------------------------------------------
+    // Initialization
+    // ---------------------------------------------------------
+    init() {
+        createOutputFile()
+    }
+
+    // ---------------------------------------------------------
+    // Create a unique CSV file for this app session
+    // ---------------------------------------------------------
+
+    private func createOutputFile() {
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+
+        let timestamp = formatter.string(from: Date())
+
+        // UUID makes the filename unique even if two sessions
+        // were somehow started during the same second
+        let filename = "loom_session_\(timestamp)_\(UUID().uuidString.prefix(6)).csv"
+
+        let documents = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        )[0]
+
+        outputURL = documents.appendingPathComponent(filename)
+
+        let header = "loom,start_time,end_time,speed,inter_stimulus_interval\n"
+
+        do {
+            try header.write(
+                to: outputURL!,
+                atomically: true,
+                encoding: .utf8
+            )
+
+            print("Created output file:")
+            print(outputURL!.path)
+
+        } catch {
+
+            print("Could not create output file: \(error)")
+        }
+    }
+
+    // ---------------------------------------------------------
+    // Draw random exponential waiting time
+    // ---------------------------------------------------------
+    private func drawTruncatedExponential(
+        mean: Double,
+        tMax: Double
+    ) -> Double {
         let u = Double.random(in: 0..<1)
         return min(-mean * log(1.0 - u), tMax)
     }
 
+    // ---------------------------------------------------------
+    // Write completed loom to CSV
+    // ---------------------------------------------------------
+    private func logLoom(endTime: Date) {
+        guard let outputURL = outputURL,
+              let startTime = loomStartTime else {
+            return
+        }
+
+        loomNumber += 1
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [
+            .withInternetDateTime,
+            .withFractionalSeconds
+        ]
+
+        let isi = currentInterStimulusInterval ?? Double.nan
+
+        let row = "\(loomNumber)," + "\(formatter.string(from: startTime))," +
+            "\(formatter.string(from: endTime))," + "\(speed)," + "\(isi)\n"
+
+        do {
+            let handle = try FileHandle(
+                forWritingTo: outputURL
+            )
+
+            try handle.seekToEnd()
+
+            if let data = row.data(using: .utf8) {
+                try handle.write(contentsOf: data)
+            }
+
+            try handle.close()
+
+        } catch {
+
+            print("Could not write loom data: \(error)")
+        }
+
+        loomStartTime = nil
+    }
+
+    // ---------------------------------------------------------
+    // Main animation / timing loop
+    // ---------------------------------------------------------
     func tick(now: Double) {
-        if startTime == nil { startTime = now }
+        // Record when the app starts
+        if startTime == nil {
+            startTime = now
+        }
+
         let elapsed = now - (startTime ?? now)
 
-        // Compute dt (seconds since last frame)
+        // -----------------------------------------------------
+        // Calculate time since previous frame
+        // -----------------------------------------------------
         let dt: Double
+
         if let last = lastNow {
-            dt = max(0.0, min(now - last, 0.1)) // clamp to avoid huge jumps
+
+            // Clamp at 0.1 s to prevent large jumps
+            dt = max(0.0, min(now - last, 0.1))
+
         } else {
+
             dt = 0.0
         }
+
         lastNow = now
 
-        // Poisson-based triggering (only when no stimulus is active)
+        // -----------------------------------------------------
+        // Schedule / trigger loom
+        // -----------------------------------------------------
         if !trigger {
+
             if nextTriggerTime == nil {
-                // First draw (after lag)
+
+                // Draw first waiting interval once lag has passed
                 if elapsed > lag {
-                    nextTriggerTime = now + drawTruncatedExponential(mean: timeInterval, tMax: maxInterval)
+                    let interval = drawTruncatedExponential(
+                        mean: timeInterval,
+                        tMax: maxInterval
+                    )
+
+                    currentInterStimulusInterval = interval
+
+                    nextTriggerTime = now + interval
                 }
             } else if now >= nextTriggerTime! {
+                // Draw a new speed for this loom
+                speed = Double.random(in: minSpeed...maxSpeed)
+                
+                // Loom begins
                 trigger = true
-                nextTriggerTime = nil   // will be redrawn after this stimulus ends
+                loomStartTime = Date(timeIntervalSince1970: now)
+                nextTriggerTime = nil
             }
         }
 
-        guard trigger else { return }
+        // If no loom is active, nothing else to update
+        guard trigger else {
+            return
+        }
 
+        // -----------------------------------------------------
         // Loom approach
+        // -----------------------------------------------------
         if dist > Double.leastNonzeroMagnitude {
             dist -= speed * dt
+
             if dist <= Double.leastNonzeroMagnitude {
                 dist = Double.leastNonzeroMagnitude
             }
         }
 
-        // Projected radius (looming geometry)
+        // -----------------------------------------------------
+        // Project physical size onto screen
+        // -----------------------------------------------------
         radius = size / dist
 
-        // Reset and schedule next poisson trigger
+        // -----------------------------------------------------
+        // Loom has reached the observer
+        // -----------------------------------------------------
         if dist <= Double.leastNonzeroMagnitude {
+            // Save completed loom
+            logLoom(
+                endTime: Date(timeIntervalSince1970: now)
+            )
+
+            // Reset loom
             dist = 100.0
             trigger = false
             radius = 0.0
 
-            nextTriggerTime = now + drawTruncatedExponential(mean: timeInterval, tMax: maxInterval)
+            // Draw next inter-stimulus interval
+            let interval = drawTruncatedExponential(
+                mean: timeInterval,
+                tMax: maxInterval
+            )
+
+            currentInterStimulusInterval = interval
+
+            nextTriggerTime = now + interval
         }
     }
 }
-
