@@ -1,12 +1,5 @@
-//
-//  ContentView.swift
-//  LoomStimulus
-//
-//  Created by Vivek Hari Sridhar on 1/30/26.
-//
 
 import SwiftUI
-
 
 struct ContentView: View {
     @StateObject private var model = LoomModel()
@@ -40,7 +33,6 @@ struct ContentView: View {
     }
 }
 
-
 @MainActor
 final class LoomModel: ObservableObject {
 
@@ -50,9 +42,10 @@ final class LoomModel: ObservableObject {
     @Published var size: Double = 100.0
     @Published var dist: Double = 100.0
     @Published var speed: Double = 5.0
+
     var minSpeed: Double = 3.0
     var maxSpeed: Double = 8.0
-    
+
     @Published var radius: Double = 0.0
 
     // ---------------------------------------------------------
@@ -60,13 +53,23 @@ final class LoomModel: ObservableObject {
     // ---------------------------------------------------------
     @Published var trigger: Bool = false
 
-    var lag: Double = -1.0
+    var lag: Double = 300.0
 
-    // Mean of exponential waiting-time distribution
+    // Choose the waiting-time distribution
+    enum WaitingTimeDistribution {
+        case exponential
+        case uniform
+    }
+
+    var waitingTimeDistribution: WaitingTimeDistribution = .uniform
+
+    // Exponential distribution parameters
     var timeInterval: Double = 10.0
-
-    // Maximum allowed waiting time
     var maxInterval: Double = 60.0
+
+    // Uniform distribution parameters
+    var uniformMinInterval: Double = 0.0
+    var uniformMaxInterval: Double = 60.0
 
     // ---------------------------------------------------------
     // Internal clock state
@@ -75,7 +78,6 @@ final class LoomModel: ObservableObject {
     private var lastNow: Double?
     private var nextTriggerTime: Double?
 
-    // Stores the randomly drawn waiting time associated with the next loom
     private var currentInterStimulusInterval: Double?
 
     // ---------------------------------------------------------
@@ -95,7 +97,6 @@ final class LoomModel: ObservableObject {
     // ---------------------------------------------------------
     // Create a unique CSV file for this app session
     // ---------------------------------------------------------
-
     private func createOutputFile() {
 
         let formatter = DateFormatter()
@@ -103,8 +104,6 @@ final class LoomModel: ObservableObject {
 
         let timestamp = formatter.string(from: Date())
 
-        // UUID makes the filename unique even if two sessions
-        // were somehow started during the same second
         let filename = "loom_session_\(timestamp)_\(UUID().uuidString.prefix(6)).csv"
 
         let documents = FileManager.default.urls(
@@ -127,26 +126,59 @@ final class LoomModel: ObservableObject {
             print(outputURL!.path)
 
         } catch {
-
             print("Could not create output file: \(error)")
         }
     }
 
     // ---------------------------------------------------------
-    // Draw random exponential waiting time
+    // Draw exponential waiting time
     // ---------------------------------------------------------
     private func drawTruncatedExponential(
         mean: Double,
         tMax: Double
     ) -> Double {
+
         let u = Double.random(in: 0..<1)
         return min(-mean * log(1.0 - u), tMax)
+    }
+
+    // ---------------------------------------------------------
+    // Draw uniform waiting time
+    // ---------------------------------------------------------
+    private func drawUniformInterval(
+        minInterval: Double,
+        maxInterval: Double
+    ) -> Double {
+
+        return Double.random(in: minInterval...maxInterval)
+    }
+
+    // ---------------------------------------------------------
+    // Select waiting-time distribution
+    // ---------------------------------------------------------
+    private func drawWaitingInterval() -> Double {
+
+        switch waitingTimeDistribution {
+
+        case .exponential:
+            return drawTruncatedExponential(
+                mean: timeInterval,
+                tMax: maxInterval
+            )
+
+        case .uniform:
+            return drawUniformInterval(
+                minInterval: uniformMinInterval,
+                maxInterval: uniformMaxInterval
+            )
+        }
     }
 
     // ---------------------------------------------------------
     // Write completed loom to CSV
     // ---------------------------------------------------------
     private func logLoom(endTime: Date) {
+
         guard let outputURL = outputURL,
               let startTime = loomStartTime else {
             return
@@ -162,8 +194,11 @@ final class LoomModel: ObservableObject {
 
         let isi = currentInterStimulusInterval ?? Double.nan
 
-        let row = "\(loomNumber)," + "\(formatter.string(from: startTime))," +
-            "\(formatter.string(from: endTime))," + "\(speed)," + "\(isi)\n"
+        let row = "\(loomNumber)," +
+            "\(formatter.string(from: startTime))," +
+            "\(formatter.string(from: endTime))," +
+            "\(speed)," +
+            "\(isi)\n"
 
         do {
             let handle = try FileHandle(
@@ -179,7 +214,6 @@ final class LoomModel: ObservableObject {
             try handle.close()
 
         } catch {
-
             print("Could not write loom data: \(error)")
         }
 
@@ -190,6 +224,7 @@ final class LoomModel: ObservableObject {
     // Main animation / timing loop
     // ---------------------------------------------------------
     func tick(now: Double) {
+
         // Record when the app starts
         if startTime == nil {
             startTime = now
@@ -203,12 +238,8 @@ final class LoomModel: ObservableObject {
         let dt: Double
 
         if let last = lastNow {
-
-            // Clamp at 0.1 s to prevent large jumps
             dt = max(0.0, min(now - last, 0.1))
-
         } else {
-
             dt = 0.0
         }
 
@@ -221,21 +252,20 @@ final class LoomModel: ObservableObject {
 
             if nextTriggerTime == nil {
 
-                // Draw first waiting interval once lag has passed
                 if elapsed > lag {
-                    let interval = drawTruncatedExponential(
-                        mean: timeInterval,
-                        tMax: maxInterval
-                    )
+
+                    // Draw interval using selected distribution
+                    let interval = drawWaitingInterval()
 
                     currentInterStimulusInterval = interval
-
                     nextTriggerTime = now + interval
                 }
+
             } else if now >= nextTriggerTime! {
+
                 // Draw a new speed for this loom
                 speed = Double.random(in: minSpeed...maxSpeed)
-                
+
                 // Loom begins
                 trigger = true
                 loomStartTime = Date(timeIntervalSince1970: now)
@@ -243,7 +273,6 @@ final class LoomModel: ObservableObject {
             }
         }
 
-        // If no loom is active, nothing else to update
         guard trigger else {
             return
         }
@@ -252,6 +281,7 @@ final class LoomModel: ObservableObject {
         // Loom approach
         // -----------------------------------------------------
         if dist > Double.leastNonzeroMagnitude {
+
             dist -= speed * dt
 
             if dist <= Double.leastNonzeroMagnitude {
@@ -268,6 +298,7 @@ final class LoomModel: ObservableObject {
         // Loom has reached the observer
         // -----------------------------------------------------
         if dist <= Double.leastNonzeroMagnitude {
+
             // Save completed loom
             logLoom(
                 endTime: Date(timeIntervalSince1970: now)
@@ -279,13 +310,9 @@ final class LoomModel: ObservableObject {
             radius = 0.0
 
             // Draw next inter-stimulus interval
-            let interval = drawTruncatedExponential(
-                mean: timeInterval,
-                tMax: maxInterval
-            )
+            let interval = drawWaitingInterval()
 
             currentInterStimulusInterval = interval
-
             nextTriggerTime = now + interval
         }
     }
